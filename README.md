@@ -85,7 +85,7 @@ Click the "Use this template" button on the GitHub repository page to create a n
 Clone your newly created repository to your local machine:
 
 ```sh
-git clone https://github.com/harksu/libbpf-starter-template.git --recursive
+git clone https://github.com/harksu/graduation.git --recursive
 ```
 
 Or after clone the repo, you can update the git submodule with following commands:
