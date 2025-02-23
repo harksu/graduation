@@ -66,25 +66,32 @@ static void bump_memlock_rlimit(void)
     }
 }
 
-int get_docker_pid(const char* container_name) {
+int get_containerd_pid(const char* container_id) {
     char cmd[MAX_CMD_LEN];
     char output[MAX_OUTPUT_LEN];
     FILE *fp;
 
-    snprintf(cmd, sizeof(cmd), "docker inspect -f '{{.State.Pid}}' %s", container_name);
+    // crictl inspect 명령어를 실행하여 jq를 통해 pid 값을 추출
+    snprintf(cmd, sizeof(cmd), "crictl inspect %s | jq '.info.pid'", container_id);
+    
     fp = popen(cmd, "r");
     if (fp == NULL) {
-        perror("Failed to run docker command");
+        perror("popen failed");
         return -1;
     }
 
     if (fgets(output, sizeof(output), fp) == NULL) {
         pclose(fp);
+        fprintf(stderr, "Failed to read output from crictl command\n");
         return -1;
     }
     pclose(fp);
 
-    return atoi(output);
+    // 출력값에 개행 문자 제거
+    output[strcspn(output, "\n")] = '\0';
+
+    int pid = atoi(output);
+    return pid;
 }
 
 unsigned long get_pid_ns_id(pid_t container_pid) {
@@ -252,7 +259,7 @@ int add_policy(int map_fd) {
     }
     container_name[strcspn(container_name, "\n")] = '\0';
 
-    int container_pid = get_docker_pid(container_name);
+    int container_pid = get_containerd_pid(container_name);
 
     // Get container pid namespace && mnt namespace by container name
     key = make_policy_key(container_pid);
