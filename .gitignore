@@ -1,2 +1,4 @@
 .direnv
 /build
+enforcement 
+#binary file for lsm
