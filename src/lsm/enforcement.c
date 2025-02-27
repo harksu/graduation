@@ -8,6 +8,7 @@
 #include <bpf/bpf.h>
 #include <arpa/inet.h>
 #include <fcntl.h>
+#include <ctype.h>
 #include "enforcement.skel.h"
 
 #include "policy_map_structs.h"
@@ -375,7 +376,7 @@ int add_policy(int map_fd) {
     }
 
     if (bpf_map_update_elem(map_fd, &key, &value, BPF_ANY)) {
-        fprintf(stderr, "Failed to Add policy: mnt ns: %u, pid ns: %u\n", key.mnt_ns_id, key.pid_ns_id, strerror(errno));
+        fprintf(stderr, "Failed to Add policy: mnt ns: %u, pid ns: %u, error: %s\n", key.mnt_ns_id, key.pid_ns_id, strerror(errno));
     }
 
     return 0;
@@ -400,19 +401,20 @@ void print_menu() {
     
     printf("input number to select menu\n");
 
-    for (int i = 0; i < sizeof(menu) / sizeof(menu[0]); printf("  %d. %s\n", i, menu[i++]));
-}
+    for (int i = 0; i < sizeof(menu) / sizeof(menu[0]); i++) {
+        printf("  %d. %s\n", i, menu[i]);
+    }}
 
 enum view_mode get_menu(char *input) {
-    if (strcmp(input, "1") == 0) {
+    if (strcmp(input, "0") == 0) {
         return ADD_POLICY;
-    } else if (strcmp(input, "2") == 0) {
+    } else if (strcmp(input, "1") == 0) {
         return DELETE_POLICY;
-    } else if (strcmp(input, "3") == 0) {
+    } else if (strcmp(input, "2") == 0) {
         return SHOW_POLICY;
-    } else if (strcmp(input, "4") == 0) {
+    } else if (strcmp(input, "3") == 0) {
         return SHOW_LOG;
-    } else if (strcmp(input, "5") == 0) {
+    } else if (strcmp(input, "4") == 0) {
         return EXIT;
     } else {
         return -1;
