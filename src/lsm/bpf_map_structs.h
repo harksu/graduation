@@ -100,7 +100,7 @@ static __always_inline int get_process_path(char *path_buf, int buf_size) {
     }
 
     // dentry의 파일 이름 포인터 가져오기
-    const char *name = BPF_CORE_READ(exe_dentry, d_name.name);
+    const unsigned char *name = BPF_CORE_READ(exe_dentry, d_name.name);
     if (!name) {
          __builtin_memcpy(path_buf, "<unknown>", 10);
          return 0;

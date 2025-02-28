@@ -282,7 +282,7 @@ int add_policy(int map_fd) {
     getchar(); // Consume newline
 
     switch (policy_type) {
-        char input;
+        //char input;
         case POLICY_FILE: {
             struct file_policy *fp = &value.file_policies[value.num_file_policies];
             printf("Enter file path: ");

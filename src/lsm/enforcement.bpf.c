@@ -67,9 +67,6 @@ char LICENSE[] SEC("license") = "GPL";
 SEC("lsm/file_open")
 int BPF_PROG(file_open, struct file *file)
 {
-	//bpf_printk("lsm_hook: file: file_open\n");
-    //should_monitor(해당 lsm_hook을 확인해야하는지)함수가 필요하고, 그에 따른 컨디셔닝 필요
-
     //__u32 pid_ns_id;
     struct task_struct *task = (struct task_struct *)bpf_get_current_task();
 
@@ -93,10 +90,6 @@ int BPF_PROG(file_open, struct file *file)
     if(bpf_d_path(&file->f_path, e->data.path, sizeof(e->data.path)) < 0){
         bpf_printk("Failed to get file path");
     }
-
-
-    //bpf_printk("file_open_bpf: pid_ns_id=%u file_path=%s\n", pid_ns_id, e->data.path);
-
 
     get_process_path(e->data.source, sizeof(e->data.source));
 
@@ -125,10 +118,9 @@ int BPF_PROG(file_open, struct file *file)
     e->event_id = SECID_FILE_OPEN;
     e->retval = ret; 
     
-    // if (flags & POLICY_AUDIT) bpf_ringbuf_submit(e, 0);
-    // else goto clear;
-    goto clear;
-    //일단은 링버퍼에 이벤트 안보내고 차단만 하는걸로
+    if (flags & POLICY_AUDIT) bpf_ringbuf_submit(e, 0);
+    else goto clear;
+   
     return ret;
 
 clear:
