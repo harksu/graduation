@@ -129,6 +129,61 @@ clear:
     //일단은 다 차단하는걸로
 }
 
+SEC("lsm/path_unlink")
+int BPF_PROG(path_unlink, struct path *path)
+{
+    struct task_struct *task = (struct task_struct *)bpf_get_current_task();
+
+    if (!should_monitor(task)) {
+        return 0;
+    }
+
+    event *e;
+    e = bpf_ringbuf_reserve(&events, sizeof(*e), 0);
+    if (!e) {
+        bpf_printk("Failed ringbuf_reserve");
+        return 0;
+    }    
+    
+    int ret = init_context(e);
+    if (ret < 0) {
+        bpf_ringbuf_discard(e, 0);
+        return 0;
+    }
+
+    if (bpf_d_path(path, e->data.path, sizeof(e->data.path)) < 0) {
+        bpf_printk("Failed to get file path");
+    }
+
+    __u32 flags = match_policy(task, POLICY_FILE, e->data.path);
+    
+    if (!flags) goto clear;
+
+    ret = 0;
+    //__u8 allow_mode = flags & POLICY_ALLOW;
+    //allow mode를 활성화 할 것 인가? (기본값 설정) 추후 고민
+
+    if (flags & POLICY_FILE_DELETE) {
+        //bit and 연산으로 완전 값이 동일한지 체크
+        ret = -1;       
+    }
+  
+    
+    bpf_printk("Operation not permitted at %s by policy \n",e->data.path);
+ 
+    e->retval = ret;
+    if (flags & POLICY_AUDIT) bpf_ringbuf_submit(e, 0);
+    else goto clear;
+    
+    return ret;
+
+clear:
+    bpf_ringbuf_discard(e, 0);
+    return ret;
+    //일단은 단순하게 플래그 있으면 차단으로
+}
+
+
 // SEC("lsm/sb_mount")
 // int BPF_PROG(sb_mount, const char *dev_name, const struct path *path,
 // 	const char *type, unsigned long flags, void *data)
@@ -584,31 +639,7 @@ clear:
 
 // }
 
-// SEC("lsm/path_unlink")
-// int BPF_PROG(path_unlink, struct path *path)
-// {
-//     //bpf_printk("lsm_hook: fs: path_unlink\n");
-//     event *e = bpf_ringbuf_reserve(&events, sizeof(*e), 0);
-//     if (!e) {
-//         return 0;
-//     }    
-    
-//     int ret = init_context(e);
-//     if (ret < 0) {
-//         bpf_ringbuf_discard(e, 0);
-//         return 0;
-//     }
 
-//     get_process_path(e->data.source, sizeof(e->data.source));
-
-//     e->event_id = SECID_PATH_UNLINK;
-//     e->retval = 0; 
-    
-//     bpf_ringbuf_submit(e, 0);
-
-//     return 0;
-
-// }
 
 // SEC("lsm/path_symlink")
 // int BPF_PROG(path_symlink, struct path *path, struct path *target)
