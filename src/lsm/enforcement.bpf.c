@@ -165,11 +165,11 @@ int BPF_PROG(path_unlink, struct path *path)
 
     if (flags & POLICY_FILE_DELETE) {
         //bit and 연산으로 완전 값이 동일한지 체크
-        ret = -1;       
+        ret = -1;     
+        bpf_printk("Operation not permitted at %s by policy \n",e->data.path);  
     }
   
     
-    bpf_printk("Operation not permitted at %s by policy \n",e->data.path);
  
     e->retval = ret;
     if (flags & POLICY_AUDIT) bpf_ringbuf_submit(e, 0);
@@ -181,6 +181,55 @@ clear:
     bpf_ringbuf_discard(e, 0);
     return ret;
     //일단은 단순하게 플래그 있으면 차단으로
+}
+
+SEC("lsm/path_mkdir")
+int BPF_PROG(path_mkdir, struct path *path, umode_t mode)
+{
+
+    struct task_struct *task = (struct task_struct *)bpf_get_current_task();
+
+    if (!should_monitor(task)) {
+        return 0;
+    }
+
+    event *e = bpf_ringbuf_reserve(&events, sizeof(*e), 0);
+    if (!e) {
+        bpf_printk("Failed ringbuf_reserve");
+        return 0;
+    }    
+    
+    int ret = init_context(e);
+    if (ret < 0) {
+        bpf_ringbuf_discard(e, 0);
+        return 0;
+    }
+
+    if (bpf_d_path(path, e->data.path, sizeof(e->data.path)) < 0) {
+        bpf_printk("Failed to get file path");
+    }
+
+    __u32 flags = match_policy(task, POLICY_FILE, e->data.path);
+
+    if (!flags) goto clear;
+
+    if (flags & POLICY_FILE_APPEND) {
+        ret = -1;
+        bpf_printk("Operation not permitted at %s by policy \n",e->data.path);
+    }
+
+    e->event_id = SECID_PATH_MKDIR;
+    e->retval = ret; 
+
+    if (flags & POLICY_AUDIT) bpf_ringbuf_submit(e, 0);
+    else goto clear;
+    return ret;
+
+clear:
+    bpf_ringbuf_discard(e, 0);
+    return ret;
+    //일단은 단순하게 플래그 있으면 차단으로
+
 }
 
 
@@ -667,31 +716,7 @@ clear:
 
 // }
 
-// SEC("lsm/path_mkdir")
-// int BPF_PROG(path_mkdir, struct path *path, umode_t mode)
-// {
-//     //bpf_printk("lsm_hook: fs: path_mkdir\n");
-//     event *e = bpf_ringbuf_reserve(&events, sizeof(*e), 0);
-//     if (!e) {
-//         return 0;
-//     }    
-    
-//     int ret = init_context(e);
-//     if (ret < 0) {
-//         bpf_ringbuf_discard(e, 0);
-//         return 0;
-//     }
 
-//     get_process_path(e->data.source, sizeof(e->data.source));
-
-//     e->event_id = SECID_PATH_MKDIR;
-//     e->retval = 0; 
-    
-//     bpf_ringbuf_submit(e, 0);
-
-//     return 0;
-
-// }
 
 // SEC("lsm/path_link")
 // int BPF_PROG(path_link, struct dentry *old_dentry, struct path *new_dir, struct dentry *new_dentry)
