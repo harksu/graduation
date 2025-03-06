@@ -76,85 +76,6 @@ static __always_inline int file_delete_syscall_handler(struct path *path) {
 static __always_inline __u32 normalize_f_flags(__u32 flags) {
     return flags & ~0x20;
 }
-// SEC("lsm/bprm_check_security")
-// int BPF_PROG(bprm_check_security, struct linux_binprm *bprm)
-// {
-//     //bpf_printk("lsm_hook: exec: bprm_check_security\n");
-    
-//     event *e = bpf_ringbuf_reserve(&events, sizeof(*e), 0);
-//     if (!e) {
-//         bpf_printk("Faild ringbuf_reserve");
-//         return 0;
-//     }
-    
-//     int ret = init_context(e);
-//     if (ret < 0) goto clear;
-
-//     if (bpf_d_path(&bprm->file->f_path, e->data.path, sizeof(e->data.path)) < 0) {
-//         bpf_printk("Failed to get file path");
-//     }
-
-//     get_process_path(e->data.source, sizeof(e->data.source));
-    
-//     e->event_id = SECID_BPRM_CHECK_SECURITY;
-//     e->retval = 0;
-    
-//     __u32 flags = match_policy(POLICY_PROCESS, e->comm);
-//     bpf_printk("flags: %u", flags);
-//     // If there is no policy, allow
-//     if (!flags) goto clear;
-
-//     // If you need to explicitly allow (whitelist | access list), it is denied by default.
-//     __u8 mode = flags & POLICY_ALLOW;
-//     if (mode) ret = -1;
-//     // Allow if policy is wrong or blacklist-based (deny list)
-//     else ret = 0;
-
-//     if (flags & POLICY_PROC_EXEC) ret -= 1;
-    
-//     e->retval = ret;
-//     if (flags & POLICY_AUDIT) bpf_ringbuf_submit(e, 0);
-//     else goto clear;
-    
-//     return ret;
-
-// clear:
-//     bpf_ringbuf_discard(e, 0);
-//     return ret;
-// }
-
-// SEC("lsm/file_permission")
-// int BPF_PROG(file_permission, struct file *file, int mask)
-// {
-//     struct task_struct *task = (struct task_struct *)bpf_get_current_task();
-//     if (!should_monitor(task))
-//         return 0;
-
-//     event *e = reserve_and_init_event();
-//     if (!e)
-//         return 0;
-
-//     // if (bpf_d_path(&file->f_path, e->data.path, sizeof(e->data.path)) < 0)
-//     //     bpf_printk("Failed to get file path in file_permission");
-
-//     get_process_path(e->data.source, sizeof(e->data.source));
-
-//     __u32 flags = match_policy(task, POLICY_FILE, e->data.path);
-//     int ret = 0;
-
-//     if ((mask & MAY_READ) && (flags & POLICY_FILE_READ))
-//         ret = -1;
-//     if ((mask & MAY_WRITE) && (flags & POLICY_FILE_WRITE))
-//         ret = -1;
-//     if ((mask & MAY_EXEC) && (flags & POLICY_FILE_EXEC))
-//         ret = -1;
-
-//     e->event_id = SECID_FILE_PERMISSION;
-//     e->retval = ret;
-
-//     process_event_handler(e, flags);
-//     return ret;
-// }
 
 
 SEC("lsm/file_open")
@@ -189,7 +110,6 @@ int BPF_PROG(file_open, struct file *file)
 
     __u32 flags = match_policy(task, POLICY_FILE, e->data.path);
 
-    bpf_printk("DEBUG: file->f_flags: %d", file->f_flags);
 
     ret = 0;
 
@@ -214,17 +134,51 @@ int BPF_PROG(file_open, struct file *file)
     e->event_id = SECID_FILE_OPEN;
     e->retval = ret; 
     
-    if (flags & POLICY_AUDIT) bpf_ringbuf_submit(e, 0);
-    else goto clear;
-   
-    return ret;
-
-clear:
-    bpf_ringbuf_discard(e, 0);
+    process_event_handler(e,flags);
+    
     return ret;
     //일단은 다 차단하는걸로
 }
 
+SEC("lsm/inode_create")
+//파일 이름 기반으로 차단, 파일이름만을 경로로 설정하면 모두 적용이 됨 ex. test
+int BPF_PROG(inode_create, struct inode *dir, struct dentry *dentry, umode_t mode) {
+    struct task_struct *task = (struct task_struct *)bpf_get_current_task();
+
+    if (!should_monitor(task)) {
+        return 0;
+    }
+
+    event *e;
+    e = bpf_ringbuf_reserve(&events, sizeof(*e), 0);
+    if (!e) {
+        bpf_printk("Failed ringbuf_reserve");
+        return 0;
+    }
+    e->event_id = SECID_FILE_CREATE;
+
+    char file_name[256] = {0};
+
+    int ret = init_context(e);
+    if (ret < 0) {
+        bpf_ringbuf_discard(e, 0);
+        return 0;
+    }
+
+    // if (bpf_probe_read_kernel_str(file_name, sizeof(file_name), dentry->d_name.name) < 0) {
+    //     bpf_ringbuf_discard(e, 0);
+    //     return 0;
+    // }
+
+    __u32 flags = match_policy(task, POLICY_FILE, file_name);
+
+
+    if (flags & POLICY_FILE_CREATE) ret = -1;
+
+    process_event_handler(e,flags);
+
+    return ret;
+}
 
 SEC("lsm/path_mkdir")
 int BPF_PROG(path_mkdir, struct path *path, umode_t mode)
@@ -254,7 +208,6 @@ int BPF_PROG(path_mkdir, struct path *path, umode_t mode)
 
     __u32 flags = match_policy(task, POLICY_FILE, e->data.path);
 
-    if (!flags) goto clear;
 
     if (flags & POLICY_FILE_APPEND) {
         ret = -1;
@@ -264,12 +217,8 @@ int BPF_PROG(path_mkdir, struct path *path, umode_t mode)
     e->event_id = SECID_PATH_MKDIR;
     e->retval = ret; 
 
-    if (flags & POLICY_AUDIT) bpf_ringbuf_submit(e, 0);
-    else goto clear;
-    return ret;
+    process_event_handler(e,flags);
 
-clear:
-    bpf_ringbuf_discard(e, 0);
     return ret;
     //일단은 단순하게 플래그 있으면 차단으로
 }
@@ -844,45 +793,4 @@ int BPF_PROG(path_rmdir, struct path *path)
 // }
 
 
-// SEC("lsm/inode_create")
-// 파일 이름 기반으로 차단, 파일이름만을 경로로 설정하면 모두 적용이 됨 ex. test
-// int BPF_PROG(inode_create, struct inode *dir, struct dentry *dentry, umode_t mode) {
-//     struct task_struct *task = (struct task_struct *)bpf_get_current_task();
 
-//     if (!should_monitor(task, POLICY_FILE)) {
-//         return 0;
-//     }
-
-//     event *e;
-//     e = bpf_ringbuf_reserve(&events, sizeof(*e), 0);
-//     if (!e) {
-//         bpf_printk("Failed ringbuf_reserve");
-//         return 0;
-//     }
-//     e->event_id = SECID_FILE_CREATE;
-
-//     char file_name[256] = {0};
-
-//     int ret = init_context(e);
-//     if (ret < 0) {
-//         bpf_ringbuf_discard(e, 0);
-//         return 0;
-//     }
-
-//     if (bpf_probe_read_kernel_str(file_name, sizeof(file_name), dentry->d_name.name) < 0) {
-//         bpf_ringbuf_discard(e, 0);
-//         return 0;
-//     }
-
-//     __u32 flags = match_policy(task, POLICY_FILE, file_name);
-
-//     if (flags & POLICY_FILE_CREATE) {
-//         ret = e->retval = (flags & POLICY_AUDIT) ? 0 : -1;
-//         bpf_ringbuf_submit(e, 0);
-//     } else {
-//         ret = 0;
-//         bpf_ringbuf_discard(e, 0);
-//     }
-
-//     return ret;
-// }

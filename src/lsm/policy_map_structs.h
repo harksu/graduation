@@ -12,6 +12,7 @@
 enum section_nr {
     SECID_BPRM_CHECK_SECURITY,
     SECID_FILE_OPEN,
+    SECID_FILE_CREATE,
     SECID_SB_MOUNT,
     SECID_SB_REMOUNT,
     SECID_SB_UMOUNT,
@@ -62,6 +63,8 @@ struct policy_key {
 #define POLICY_FILE_APPEND  (1 << 3)   // 파일 추가 허용
 #define POLICY_FILE_RENAME  (1 << 4)   // 파일 이름 변경 허용
 #define POLICY_FILE_DELETE  (1 << 5)   // 파일 삭제 허용
+#define POLICY_FILE_CREATE  (1 << 6)   // 파일 생성 허용(echo 명령등)
+
 struct file_policy {
     char path[MAX_PATH_LENGTH];
     __u32 flags;
