@@ -49,11 +49,11 @@ struct policy_key {
 };
 
 // 일반 정책 플래그
+#define POLICY_RECURSIVE    (1 << 27)  // 재귀적으로 적용 (디렉토리 등) => 오류 발생해서 32에서 27로 변경
 #define POLICY_AUDIT        (1 << 28)  // 감사 로깅 활성화
 #define POLICY_DENY         (1 << 29)  // 명시적 거부 (기본 허용 시)
 #define POLICY_ALLOW        (1 << 30)  // 명시적 허용 (기본 거부 시)
 #define POLICY_OWNER        (1 << 31)  // 소유자에게만 적용
-#define POLICY_RECURSIVE    (1ULL << 32)  // 재귀적으로 적용 (디렉토리 등)
 
 // 파일 관련 플래그
 #define POLICY_FILE_READ    (1 << 0)   // 파일 읽기 허용

@@ -15,6 +15,10 @@
 #define FMODE_EXEC (1 << 18)
 // file mode flag  
 
+#define MAY_READ  0x1
+#define MAY_WRITE 0x2
+#define MAY_EXEC  0x4
+
 char LICENSE[] SEC("license") = "GPL";
 
 static __always_inline event *reserve_and_init_event(void){
@@ -68,6 +72,10 @@ static __always_inline int file_delete_syscall_handler(struct path *path) {
 
     return ret;
 }
+
+static __always_inline __u32 normalize_f_flags(__u32 flags) {
+    return flags & ~0x20;
+}
 // SEC("lsm/bprm_check_security")
 // int BPF_PROG(bprm_check_security, struct linux_binprm *bprm)
 // {
@@ -115,9 +123,44 @@ static __always_inline int file_delete_syscall_handler(struct path *path) {
 //     return ret;
 // }
 
+// SEC("lsm/file_permission")
+// int BPF_PROG(file_permission, struct file *file, int mask)
+// {
+//     struct task_struct *task = (struct task_struct *)bpf_get_current_task();
+//     if (!should_monitor(task))
+//         return 0;
+
+//     event *e = reserve_and_init_event();
+//     if (!e)
+//         return 0;
+
+//     // if (bpf_d_path(&file->f_path, e->data.path, sizeof(e->data.path)) < 0)
+//     //     bpf_printk("Failed to get file path in file_permission");
+
+//     get_process_path(e->data.source, sizeof(e->data.source));
+
+//     __u32 flags = match_policy(task, POLICY_FILE, e->data.path);
+//     int ret = 0;
+
+//     if ((mask & MAY_READ) && (flags & POLICY_FILE_READ))
+//         ret = -1;
+//     if ((mask & MAY_WRITE) && (flags & POLICY_FILE_WRITE))
+//         ret = -1;
+//     if ((mask & MAY_EXEC) && (flags & POLICY_FILE_EXEC))
+//         ret = -1;
+
+//     e->event_id = SECID_FILE_PERMISSION;
+//     e->retval = ret;
+
+//     process_event_handler(e, flags);
+//     return ret;
+// }
+
+
 SEC("lsm/file_open")
 int BPF_PROG(file_open, struct file *file)
 {
+    //미완성 => cat, ls {file_name}해야됨 => 해당 문제는 recursive_flag가 필요함(파일 전체 이름이 경로로 인자가 들어가지만, 정책은 경로만 인자로 넣기 때문에)
     //__u32 pid_ns_id;
     struct task_struct *task = (struct task_struct *)bpf_get_current_task();
 
@@ -146,11 +189,13 @@ int BPF_PROG(file_open, struct file *file)
 
     __u32 flags = match_policy(task, POLICY_FILE, e->data.path);
 
+    bpf_printk("DEBUG: file->f_flags: %d", file->f_flags);
+
     ret = 0;
 
     if ((flags & POLICY_FILE_READ) && ((file->f_flags & O_WRONLY) == 0))  {
         bpf_printk("block read at %s %d \n", e->data.path, flags);
-        ret -= 1;
+        ret = -1;
     }
     // if ((!flags) && (file->f_flags & (O_WRONLY | O_RDWR))) {
     //     bpf_printk("block write at %s %d \n", e->data.path, flags);
@@ -158,11 +203,11 @@ int BPF_PROG(file_open, struct file *file)
     // }
     if((flags & POLICY_FILE_WRITE) && (file->f_flags & (O_WRONLY | O_RDWR))) {
         bpf_printk("block write at %s %d \n", e->data.path, flags);
-        ret -= 1;
+        ret = -1;
     }
     if ((flags & POLICY_FILE_EXEC) && (file->f_flags & FMODE_EXEC)) {
         bpf_printk("block execute at %s %d \n", e->data.path, flags);
-        ret -= 1;
+        ret = -1;
     }
 
     
@@ -180,59 +225,6 @@ clear:
     //일단은 다 차단하는걸로
 }
 
-SEC("lsm/path_unlink")
-int BPF_PROG(path_unlink, struct path *path)
-{
-    struct task_struct *task = (struct task_struct *)bpf_get_current_task();
-
-    if (!should_monitor(task)) {
-        return 0;
-    }
-
-    event *e;
-    e = bpf_ringbuf_reserve(&events, sizeof(*e), 0);
-    if (!e) {
-        bpf_printk("Failed ringbuf_reserve");
-        return 0;
-    }    
-    
-    int ret = init_context(e);
-    if (ret < 0) {
-        bpf_ringbuf_discard(e, 0);
-        return 0;
-    }
-
-    if (bpf_d_path(path, e->data.path, sizeof(e->data.path)) < 0) {
-        bpf_printk("Failed to get file path");
-    }
-
-    __u32 flags = match_policy(task, POLICY_FILE, e->data.path);
-    
-    if (!flags) goto clear;
-
-    ret = 0;
-    //__u8 allow_mode = flags & POLICY_ALLOW;
-    //allow mode를 활성화 할 것 인가? (기본값 설정) 추후 고민
-
-    if (flags & POLICY_FILE_DELETE) {
-        //bit and 연산으로 완전 값이 동일한지 체크
-        ret = -1;     
-        bpf_printk("Operation not permitted at %s by policy \n",e->data.path);  
-    }
-  
-    
- 
-    e->retval = ret;
-    if (flags & POLICY_AUDIT) bpf_ringbuf_submit(e, 0);
-    else goto clear;
-    
-    return ret;
-
-clear:
-    bpf_ringbuf_discard(e, 0);
-    return ret;
-    //일단은 단순하게 플래그 있으면 차단으로
-}
 
 SEC("lsm/path_mkdir")
 int BPF_PROG(path_mkdir, struct path *path, umode_t mode)
@@ -280,7 +272,12 @@ clear:
     bpf_ringbuf_discard(e, 0);
     return ret;
     //일단은 단순하게 플래그 있으면 차단으로
+}
 
+SEC("lsm/path_unlink")
+int BPF_PROG(path_unlink, struct path *path)
+{
+   return file_delete_syscall_handler(path);
 }
 
 SEC("lsm/path_rmdir")
@@ -633,39 +630,6 @@ int BPF_PROG(path_rmdir, struct path *path)
 
 // }
 
-// SEC("lsm/file_permission")
-// int BPF_PROG(file_permission, struct file *file, int mask)
-// {
-//     //bpf_printk("lsm_hook: file: file_permission\n");
-//     event *e = bpf_ringbuf_reserve(&events, sizeof(*e), 0);
-//     if (!e) {
-//         return 0;
-//     }    
-    
-//     int ret = init_context(e);
-//     if (ret < 0) {
-//         bpf_ringbuf_discard(e, 0);
-//         return 0;
-//     }
-    
-//     struct dentry *dentry;
-//     if (bpf_probe_read_kernel(&dentry, sizeof(dentry), &file->f_path.dentry) == 0) {
-//         const unsigned char *name;
-//         if (bpf_probe_read_kernel(&name, sizeof(name), &dentry->d_name.name) == 0) {
-//             bpf_probe_read_kernel_str(e->data.path, sizeof(e->data.path), name);
-//         }
-//     }
-
-//     get_process_path(e->data.source, sizeof(e->data.source));
-    
-//     e->event_id = SECID_FILE_PERMISSION;
-//     e->retval = 0; 
-    
-//     bpf_ringbuf_submit(e, 0);
-
-//     return 0;
-
-// }
 
 // SEC("lsm/capable")
 // int BPF_PROG(capable, struct task_struct *task, const struct cred *cred, int cap)
@@ -877,4 +841,48 @@ int BPF_PROG(path_rmdir, struct path *path)
 
 //     return 0;
 
+// }
+
+
+// SEC("lsm/inode_create")
+// 파일 이름 기반으로 차단, 파일이름만을 경로로 설정하면 모두 적용이 됨 ex. test
+// int BPF_PROG(inode_create, struct inode *dir, struct dentry *dentry, umode_t mode) {
+//     struct task_struct *task = (struct task_struct *)bpf_get_current_task();
+
+//     if (!should_monitor(task, POLICY_FILE)) {
+//         return 0;
+//     }
+
+//     event *e;
+//     e = bpf_ringbuf_reserve(&events, sizeof(*e), 0);
+//     if (!e) {
+//         bpf_printk("Failed ringbuf_reserve");
+//         return 0;
+//     }
+//     e->event_id = SECID_FILE_CREATE;
+
+//     char file_name[256] = {0};
+
+//     int ret = init_context(e);
+//     if (ret < 0) {
+//         bpf_ringbuf_discard(e, 0);
+//         return 0;
+//     }
+
+//     if (bpf_probe_read_kernel_str(file_name, sizeof(file_name), dentry->d_name.name) < 0) {
+//         bpf_ringbuf_discard(e, 0);
+//         return 0;
+//     }
+
+//     __u32 flags = match_policy(task, POLICY_FILE, file_name);
+
+//     if (flags & POLICY_FILE_CREATE) {
+//         ret = e->retval = (flags & POLICY_AUDIT) ? 0 : -1;
+//         bpf_ringbuf_submit(e, 0);
+//     } else {
+//         ret = 0;
+//         bpf_ringbuf_discard(e, 0);
+//     }
+
+//     return ret;
 // }
