@@ -269,6 +269,42 @@ int BPF_PROG(path_rmdir, struct path *path)
 
 }
 
+SEC("lsm/path_chmod")
+int BPF_PROG(path_chmod, struct path *path, umode_t mode)
+{
+    struct task_struct *task = (struct task_struct *)bpf_get_current_task();
+    if (!should_monitor(task))
+        return 0;
+
+    event *e = reserve_and_init_event();
+    if (!e)
+        return 0;
+
+    int ret = init_context(e);
+    if (ret < 0) {
+        bpf_ringbuf_discard(e, 0);
+        return 0;
+    }
+
+    if (bpf_d_path(path, e->data.path, sizeof(e->data.path)) < 0)
+        bpf_printk("Failed to get file path in path_chmod");
+
+    get_process_path(e->data.source, sizeof(e->data.source));
+
+    __u32 flags = match_policy(task, POLICY_FILE, e->data.path);
+    if (flags & POLICY_FILE_SET_UID)
+        ret = -1;
+    else
+        ret = 0;
+
+    e->event_id = SECID_PATH_CHMOD;
+    e->retval = ret;
+
+    process_event_handler(e, flags);
+    return ret;
+}
+
+
 // SEC("lsm/sb_mount")
 // int BPF_PROG(sb_mount, const char *dev_name, const struct path *path,
 // 	const char *type, unsigned long flags, void *data)
@@ -720,31 +756,6 @@ int BPF_PROG(path_rmdir, struct path *path)
 
 // }
 
-// SEC("lsm/path_chmod")
-// int BPF_PROG(path_chmod, struct path *path, umode_t mode)
-// {
-//     //bpf_printk("lsm_hook: fs: path_chmod\n");
-//     event *e = bpf_ringbuf_reserve(&events, sizeof(*e), 0);
-//     if (!e) {
-//         return 0;
-//     }    
-    
-//     int ret = init_context(e);
-//     if (ret < 0) {
-//         bpf_ringbuf_discard(e, 0);
-//         return 0;
-//     }
-
-//     get_process_path(e->data.source, sizeof(e->data.source));
-
-//     e->event_id = SECID_PATH_CHMOD;
-//     e->retval = 0; 
-    
-//     bpf_ringbuf_submit(e, 0);
-
-//     return 0;
-
-// }
 
 // SEC("lsm/path_truncate")
 // int BPF_PROG(path_truncate, struct path *path, loff_t length)
