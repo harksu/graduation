@@ -15,10 +15,6 @@
 #define FMODE_EXEC (1 << 18)
 // file mode flag  
 
-#define MAY_READ  0x1
-#define MAY_WRITE 0x2
-#define MAY_EXEC  0x4
-
 char LICENSE[] SEC("license") = "GPL";
 
 static __always_inline event *reserve_and_init_event(void){
@@ -77,6 +73,43 @@ static __always_inline __u32 normalize_f_flags(__u32 flags) {
     return flags & ~0x20;
 }
 
+SEC("lsm/bprm_check_security")
+int BPF_PROG(bprm_check_security, struct linux_binprm *bprm)
+{
+    struct task_struct *task = (struct task_struct *)bpf_get_current_task();
+    if (!should_monitor(task))
+        return 0;
+
+    event *e = bpf_ringbuf_reserve(&events, sizeof(*e), 0);
+    if (!e) {
+        bpf_printk("Failed ringbuf_reserve");
+        return 0;
+    }
+
+    int ret = init_context(e);
+    if (ret < 0) {
+        bpf_ringbuf_discard(e, 0);
+        return 0;
+    }
+
+    if (bpf_d_path(&bprm->file->f_path, e->data.path, sizeof(e->data.path)) < 0) {
+        //여기서 출력문 나중에 한 번 찍어보기
+    }
+
+    get_process_path(e->data.source, sizeof(e->data.source));
+
+    e->event_id = SECID_BPRM_CHECK_SECURITY;
+    e->retval = 0;
+
+    __u32 flags = match_policy(task, POLICY_PROCESS, e->comm);
+
+    if ((flags & POLICY_PROC_EXEC) || (flags & POLICY_FILE_EXEC)) {
+        e->retval = -1;
+        ret = e->retval;
+    }
+    process_event_handler(e,flags);
+    return ret;
+}
 
 SEC("lsm/file_open")
 int BPF_PROG(file_open, struct file *file)
@@ -419,33 +452,6 @@ int BPF_PROG(path_rmdir, struct path *path)
 //         bpf_printk("Permission denied\n");
 //         return -1;
 //     }
-
-// 	return 0;
-// }
-
-// SEC("lsm/task_fix_setuid")
-// int BPF_PROG(task_fix_setuid, struct cred *new, const struct cred *old,
-// 	 int flags)
-// {
-// 	//bpf_printk("lsm_hook: task: task_fix_setuid\n");
-
-// 	event *e = bpf_ringbuf_reserve(&events, sizeof(*e), 0);
-//     if (!e) {
-//         return 0;
-//     }    
-    
-//     int ret = init_context(e);
-//     if (ret < 0) {
-//         bpf_ringbuf_discard(e, 0);
-//         return 0;
-//     }
-    
-//     get_process_path(e->data.source, sizeof(e->data.source));
-
-//     e->event_id = SECID_TASK_FIX_SETUID;
-//     e->retval = 0; 
-    
-//     bpf_ringbuf_submit(e, 0);
 
 // 	return 0;
 // }
@@ -793,4 +799,34 @@ int BPF_PROG(path_rmdir, struct path *path)
 // }
 
 
+// SEC("lsm/task_fix_setuid")
+// int BPF_PROG(task_fix_setuid, struct cred *new, const struct cred *old, int flags)
+// {
+//     struct task_struct *task = (struct task_struct *)bpf_get_current_task();
+//     if (!should_monitor(task))
+//         return 0;
 
+//     event *e = reserve_and_init_event();
+//     if (!e)
+//         return 0;
+
+//     int ret = init_context(e);
+//     if (ret < 0) {
+//         bpf_ringbuf_discard(e, 0);
+//         return 0;
+//     }
+
+//     get_process_path(e->data.source, sizeof(e->data.source));
+//     e->event_id = SECID_TASK_FIX_SETUID;
+
+//     __u32 policy_flags = match_policy(task, POLICY_FILE, e->comm);
+//     bpf_printk("setuid path %d \n", e->comm);
+//     if (policy_flags & POLICY_FILE_SET_UID)
+//         ret = -1;
+//     else
+//         ret = 0;
+
+//     e->retval = ret;
+//     process_event_handler(e, policy_flags);
+//     return ret;
+// }

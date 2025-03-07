@@ -57,13 +57,14 @@ struct policy_key {
 #define POLICY_OWNER        (1 << 31)  // 소유자에게만 적용
 
 // 파일 관련 플래그
-#define POLICY_FILE_READ    (1 << 0)   // 파일 읽기 허용
-#define POLICY_FILE_WRITE   (1 << 1)   // 파일 쓰기 허용
-#define POLICY_FILE_EXEC    (1 << 2)   // 파일 실행 허용
-#define POLICY_FILE_APPEND  (1 << 3)   // 파일 추가 허용
-#define POLICY_FILE_RENAME  (1 << 4)   // 파일 이름 변경 허용
-#define POLICY_FILE_DELETE  (1 << 5)   // 파일 삭제 허용
-#define POLICY_FILE_CREATE  (1 << 6)   // 파일 생성 허용(echo 명령등)
+#define POLICY_FILE_READ    (1 << 0)   // 파일 읽기 차단
+#define POLICY_FILE_WRITE   (1 << 1)   // 파일 쓰기 차단
+#define POLICY_FILE_EXEC    (1 << 2)   // 파일 실행 차단
+#define POLICY_FILE_APPEND  (1 << 3)   // 파일 추가 차단
+#define POLICY_FILE_RENAME  (1 << 4)   // 파일 이름 변경 차단
+#define POLICY_FILE_DELETE  (1 << 5)   // 파일 삭제 차단
+#define POLICY_FILE_CREATE  (1 << 6)   // 파일 생성 차단(echo 명령등)
+#define POLICY_FILE_SET_UID (1 << 7)   // setuid, setgid 등 특수 권한 차단
 
 struct file_policy {
     char path[MAX_PATH_LENGTH];

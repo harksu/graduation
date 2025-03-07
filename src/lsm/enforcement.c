@@ -192,6 +192,8 @@ void print_policies(int map_fd) {
                 if (value.file_policies[i].flags & POLICY_FILE_APPEND) printf("APPEND ");
                 if (value.file_policies[i].flags & POLICY_FILE_RENAME) printf("RENAME ");
                 if (value.file_policies[i].flags & POLICY_FILE_DELETE) printf("DELETE ");
+                if (value.file_policies[i].flags & POLICY_RECURSIVE) printf("RECURSIVE ");
+                if (value.file_policies[i].flags & POLICY_FILE_SET_UID) printf("SETUID ");
                 printf("\n");
             }
 
@@ -298,12 +300,12 @@ int add_policy(int map_fd) {
             if (get_yes_no_input("Block Append")) fp->flags |= POLICY_FILE_APPEND;
             if (get_yes_no_input("Block Rename")) fp->flags |= POLICY_FILE_RENAME;
             if (get_yes_no_input("Block Delete")) fp->flags |= POLICY_FILE_DELETE;
+            if (get_yes_no_input("Block Set Uid, Gid")) fp->flags |= POLICY_FILE_SET_UID;
             if (get_yes_no_input("Leave a log")) fp->flags |= POLICY_AUDIT;
             if (get_yes_no_input("Explicit Deny")) fp->flags |= POLICY_DENY;
             else fp->flags |= POLICY_ALLOW;
             if (get_yes_no_input("Owner Policy")) fp->flags |= POLICY_OWNER;
             if (get_yes_no_input("Recursive Policy in Dir")) fp->flags |= POLICY_RECURSIVE;
-            
             value.num_file_policies++;
             break;
         }
@@ -379,6 +381,27 @@ int add_policy(int map_fd) {
         fprintf(stderr, "Failed to Add policy: mnt ns: %u, pid ns: %u, error: %s\n", key.mnt_ns_id, key.pid_ns_id, strerror(errno));
     }
 
+    return 0;
+}
+
+int delete_policy(int map_fd) {
+    char container_name[256];
+    printf("Enter container ID (container_name) to delete policy: ");
+    if (!fgets(container_name, sizeof(container_name), stdin))
+        return -1;
+    container_name[strcspn(container_name, "\n")] = '\0';
+
+    int container_pid = get_containerd_pid(container_name);
+    if (container_pid <= 0)
+        return -1;
+
+    struct policy_key key = make_policy_key(container_pid);
+    int ret = bpf_map_delete_elem(map_fd, &key);
+    if (ret) {
+        fprintf(stderr, "Failed to delete policy for container %s, error: %s\n", container_name, strerror(errno));
+        return ret;
+    }
+    printf("Policy deleted for container %s (pid_ns: %u, mnt_ns: %u)\n", container_name, key.pid_ns_id, key.mnt_ns_id);
     return 0;
 }
 
@@ -524,6 +547,11 @@ int main(int argc, char **argv)
             break;
         case DELETE_POLICY:
             printf("Delete Policy\n");
+            if (delete_policy(map_fd) == 0) {
+                printf("Policy deleted successfully\n");
+            } else {
+                printf("Failed to delete policy\n");
+            }
             break;
         case SHOW_POLICY:
             printf("Show Policy\n");
