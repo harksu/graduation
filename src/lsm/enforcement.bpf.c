@@ -319,20 +319,20 @@ int BPF_PROG(path_chmod, struct path *path, umode_t mode)
 #define TCP_SYN_THRESHOLD 30
 #define UDP_THRESHOLD     30
 
-struct flow_key {
-    __u32 src_ip;
-    __u32 dst_ip;
-   // __u16 src_port;
-   // __u16 dst_port;
-    __u8  proto;
-};
+// struct flow_key {
+//     __u32 src_ip;
+//     __u32 dst_ip;
+//    // __u16 src_port;
+//    // __u16 dst_port;
+//     __u8  proto;
+// };
 
 struct {
     __uint(type, BPF_MAP_TYPE_HASH);
     __uint(max_entries, 10240);
-    __type(key, struct flow_key);
+    __type(key, __u32); //일단 송신지 ip 하나로만 변경
     __type(value, __u32);
-} flow_count SEC(".maps");
+} syn_count SEC(".maps");
 
 static __always_inline int parse_eth(void **data, void **data_end, struct ethhdr **ethhdr)
 {
@@ -355,83 +355,47 @@ static __always_inline __u16 bpf_ntohs(__u16 val) {
 }
 
 SEC("xdp")
-int xdp_ddos_defense(struct xdp_md *ctx)
-{
-    void *data = (void *)(long)ctx->data;
+int xdp_syn_defense(struct xdp_md *ctx) {
+    void *data     = (void *)(long)ctx->data;
     void *data_end = (void *)(long)ctx->data_end;
-    struct ethhdr *eth;
 
-    if (parse_eth(&data, &data_end, &eth) < 0)
+    // 이더넷 헤더 파싱
+    struct ethhdr *eth = data;
+    if ((void*)eth + sizeof(*eth) > data_end)
         return XDP_PASS;
     if (eth->h_proto != __constant_htons(ETH_P_IP))
         return XDP_PASS;
-    
-    struct iphdr *ip;
-    data += sizeof(struct ethhdr);
-    if (parse_ip(&data, &data_end, &ip) < 0)
+
+    // IP 헤더 파싱
+    struct iphdr *ip = (void*)eth + sizeof(*eth);
+    if ((void*)ip + sizeof(*ip) > data_end)
+        return XDP_PASS;
+    if (ip->protocol != IPPROTO_TCP)
         return XDP_PASS;
 
-    struct flow_key key = {};
-    key.src_ip = ip->saddr;
-    key.dst_ip = ip->daddr;
-    key.proto  = ip->protocol;
+    // TCP 헤더 파싱 및 SYN-only 확인
+    struct tcphdr *tcp = (void*)ip + ip->ihl * 4;
+    if ((void*)tcp + sizeof(*tcp) > data_end)
+        return XDP_PASS;
+    if (!(tcp->syn && !tcp->ack))
+        return XDP_PASS;
 
-    // TCP 프로토콜 처리 (SYN Flood 방어)
-    if (ip->protocol == IPPROTO_TCP) {
-        struct tcphdr *tcp = data + sizeof(struct iphdr);
-        if ((void*)(tcp + 1) > data_end)
-            return XDP_PASS;
-       // key.src_port = tcp->source;
-      //  key.dst_port = tcp->dest;
-     
+    __u32 src_ip = ip->saddr;
 
-        if (tcp->syn && !tcp->ack) {
-            __u32 *count, init_val = 1;
-            count = bpf_map_lookup_elem(&flow_count, &key);
-            if (count) {
-                // 임계치 이상이면 카운트를 증가시키지 않고 바로 드랍
-                if (*count >= TCP_SYN_THRESHOLD) {
-                    bpf_printk("xdp_ddos_defense: Dropping TCP packet: src_ip=0x%x, dst_ip=0x%x, proto=%d, count=%d\n",
-                               key.src_ip, key.dst_ip, key.proto, *count);
-                    return XDP_DROP;
-                }
-                __u32 new_count = *count + 1;
-                bpf_map_update_elem(&flow_count, &key, &new_count, BPF_EXIST);
-                bpf_printk("xdp_ddos_defense: TCP flow update: src_ip=0x%x, dst_ip=0x%x, proto=%d, count=%d\n",
-                           key.src_ip, key.dst_ip,  key.proto, new_count);
-            } else {
-                bpf_map_update_elem(&flow_count, &key, &init_val, BPF_ANY);
-                bpf_printk("xdp_ddos_defense: New TCP flow: src_ip=0x%x, dst_ip=0x%x, proto=%d, count=1\n",
-                           key.src_ip, key.dst_ip,  key.proto);
-            }
+    // src IP별 카운트 조회
+    __u32 *cnt = bpf_map_lookup_elem(&syn_count, &src_ip);
+    if (cnt) {
+        if (*cnt >= TCP_SYN_THRESHOLD) {
+            bpf_printk("DROP %dth SYN from %x\n", *cnt, src_ip);
+            return XDP_DROP;
         }
+        __u32 new_cnt = *cnt + 1;
+        bpf_map_update_elem(&syn_count, &src_ip, &new_cnt, BPF_EXIST);
+    } else {
+        __u32 init = 1;
+        bpf_map_update_elem(&syn_count, &src_ip, &init, BPF_ANY);
     }
-    // UDP 프로토콜 처리 (UDP Flood 방어)
-    else if (ip->protocol == IPPROTO_UDP) {
-        struct udphdr *udp = data + sizeof(struct iphdr);
-        if ((void*)(udp + 1) > data_end)
-            return XDP_PASS;
-        // key.src_port = udp->source;
-        // key.dst_port = udp->dest;
 
-        __u32 *count, init_val = 1;
-        count = bpf_map_lookup_elem(&flow_count, &key);
-        if (count) {
-            if (*count >= UDP_THRESHOLD) {
-                bpf_printk("xdp_ddos_defense: Dropping UDP packet: src_ip=0x%x, dst_ip=0x%x,  proto=%d, count=%d\n",
-                           key.src_ip, key.dst_ip,  key.proto, *count);
-                return XDP_DROP;
-            }
-            __u32 new_count = *count + 1;
-            bpf_map_update_elem(&flow_count, &key, &new_count, BPF_EXIST);
-            bpf_printk("xdp_ddos_defense: UDP flow update: src_ip=0x%x, dst_ip=0x%x,  proto=%d, count=%d\n",
-                       key.src_ip, key.dst_ip,  key.proto, new_count);
-        } else {
-            bpf_map_update_elem(&flow_count, &key, &init_val, BPF_ANY);
-            bpf_printk("xdp_ddos_defense: New UDP flow: src_ip=0x%x, dst_ip=0x%x, proto=%d, count=1\n",
-                       key.src_ip, key.dst_ip,  key.proto);
-        }
-    }
     return XDP_PASS;
 }
 
