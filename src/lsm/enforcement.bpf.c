@@ -316,89 +316,76 @@ int BPF_PROG(path_chmod, struct path *path, umode_t mode)
 // XDP DDoS Defense 코드
 // =========================
 
-#define TCP_SYN_THRESHOLD 30
-#define UDP_THRESHOLD     30
+#define TCP_SYN_THRESHOLD 5           // 초당 최대 SYN 허용치
+#define SYN_WINDOW_NS      1000000000ULL  // 1초 = 1e9 ns
 
-// struct flow_key {
-//     __u32 src_ip;
-//     __u32 dst_ip;
-//    // __u16 src_port;
-//    // __u16 dst_port;
-//     __u8  proto;
-// };
+struct syn_info {
+    __u64 ts;    // 마지막 윈도우 시작 시각 (ns)
+    __u32 cnt;   // 윈도우 내 SYN 카운트
+};
 
+// src IP → syn_info 맵 (LRU_HASH로 오래된 항목 자동 제거)
 struct {
-    __uint(type, BPF_MAP_TYPE_HASH);
+    __uint(type, BPF_MAP_TYPE_LRU_HASH);
     __uint(max_entries, 10240);
-    __type(key, __u32); //일단 송신지 ip 하나로만 변경
-    __type(value, __u32);
-} syn_count SEC(".maps");
-
-static __always_inline int parse_eth(void **data, void **data_end, struct ethhdr **ethhdr)
-{
-    *ethhdr = *data;
-    if ((void*)(*ethhdr + 1) > *data_end)
-        return -1;
-    return 0;
-}
-
-static __always_inline int parse_ip(void **data, void **data_end, struct iphdr **iphdr)
-{
-    *iphdr = *data;
-    if ((void*)(*iphdr + 1) > *data_end)
-        return -1;
-    return 0;
-}
-
-static __always_inline __u16 bpf_ntohs(__u16 val) {
-    return (val << 8) | (val >> 8);
-}
+    __type(key,   __u32);
+    __type(value, struct syn_info);
+} syn_map SEC(".maps");
 
 SEC("xdp")
-int xdp_syn_defense(struct xdp_md *ctx) {
+int xdp_syn_rate_limit(struct xdp_md *ctx) {
     void *data     = (void *)(long)ctx->data;
     void *data_end = (void *)(long)ctx->data_end;
 
-    // 이더넷 헤더 파싱
+    // 이더넷
     struct ethhdr *eth = data;
-    if ((void*)eth + sizeof(*eth) > data_end)
-        return XDP_PASS;
-    if (eth->h_proto != __constant_htons(ETH_P_IP))
-        return XDP_PASS;
+    if ((void*)eth + sizeof(*eth) > data_end)      return XDP_PASS;
+    if (eth->h_proto != __constant_htons(ETH_P_IP)) return XDP_PASS;
 
-    // IP 헤더 파싱
+    // IP
     struct iphdr *ip = (void*)eth + sizeof(*eth);
-    if ((void*)ip + sizeof(*ip) > data_end)
-        return XDP_PASS;
-    if (ip->protocol != IPPROTO_TCP)
-        return XDP_PASS;
+    if ((void*)ip + sizeof(*ip) > data_end)         return XDP_PASS;
+    if (ip->protocol != IPPROTO_TCP)                return XDP_PASS;
 
-    // TCP 헤더 파싱 및 SYN-only 확인
+    // TCP
     struct tcphdr *tcp = (void*)ip + ip->ihl * 4;
-    if ((void*)tcp + sizeof(*tcp) > data_end)
-        return XDP_PASS;
-    if (!(tcp->syn && !tcp->ack))
-        return XDP_PASS;
+    if ((void*)tcp + sizeof(*tcp) > data_end)       return XDP_PASS;
+
+    // SYN-only 패킷이 아니면 PASS
+    if (!(tcp->syn && !tcp->ack))                   return XDP_PASS;
 
     __u32 src_ip = ip->saddr;
+    __u64 now   = bpf_ktime_get_ns();
 
-    // src IP별 카운트 조회
-    __u32 *cnt = bpf_map_lookup_elem(&syn_count, &src_ip);
-    if (cnt) {
-        if (*cnt >= TCP_SYN_THRESHOLD) {
-            bpf_printk("DROP %dth SYN from %x\n", *cnt, src_ip);
+    struct syn_info *info = bpf_map_lookup_elem(&syn_map, &src_ip);
+    if (info) {
+        // 같은 1초 윈도우인가?
+        if (now - info->ts <= SYN_WINDOW_NS) {
+            // 윈도우 내 카운트 증가
+            info->cnt++;
+        } else {
+            // 새 윈도우: 초기화
+            info->ts  = now;
+            info->cnt = 1;
+        }
+        // 임계치 초과 시 드롭
+        if (info->cnt > TCP_SYN_THRESHOLD) {
+            bpf_printk("RATE DROP %u SYN from %x\n", info->cnt, src_ip);
             return XDP_DROP;
         }
-        __u32 new_cnt = *cnt + 1;
-        bpf_map_update_elem(&syn_count, &src_ip, &new_cnt, BPF_EXIST);
+        // 갱신
+        bpf_map_update_elem(&syn_map, &src_ip, info, BPF_EXIST);
     } else {
-        __u32 init = 1;
-        bpf_map_update_elem(&syn_count, &src_ip, &init, BPF_ANY);
+        // 신규 IP: 윈도우 시작
+        struct syn_info init = {
+            .ts  = now,
+            .cnt = 1,
+        };
+        bpf_map_update_elem(&syn_map, &src_ip, &init, BPF_ANY);
     }
 
     return XDP_PASS;
 }
-
 
 // SEC("lsm/sb_mount")
 // int BPF_PROG(sb_mount, const char *dev_name, const struct path *path,
